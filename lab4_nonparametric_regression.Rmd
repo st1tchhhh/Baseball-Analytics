@@ -1,0 +1,381 @@
+---
+title: "Lab 4"
+author: "Xiangchen Guo"
+date: "Due on 4/12/25 at 11:59 pm"
+output: pdf_document
+urlcolor: blue
+---
+    
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+statcast <- read.csv("statcast.csv")
+```
+
+**What I'm doing:** This lab explores non-parametric regression using kernel smoothing, smoothing splines, and LOESS.
+
+```{r}
+library(tidyverse)
+sc_bip_small <- read_csv("sc_bip_small.csv")
+bip_2018 <- sc_bip_small %>%
+  filter(game_date >= "2018-03-29", game_date <= "2018-10-01")
+bat_ev <- bip_2018 %>%
+  group_by(batter, batter_name) %>%
+  summarise(avg_ev = mean(launch_speed, na.rm = TRUE), count = n()) %>%
+  filter(count > 100) %>%
+  arrange(desc(avg_ev)) %>%
+  head(10)
+bat_ev
+
+```
+
+```{r}
+ev_density <- bip_2018 %>%
+  group_by(batter_name) %>%
+  filter(n() > 100)
+
+ggplot(ev_density, aes(x = launch_speed, group = batter_name)) +
+  geom_density(size = 0.1, color = "red" ) +
+  labs(x = "Exit Velocity", y = "Density")
+```
+Most batters have kind of the same exit velocity curve that goes down to the left but once you get over 100 MPH, there are some noticeable differences. Some players are clearly hitting the ball much harder than others, so maybe being able to produce a high exit velocity repeatedly might be some sort of skill.
+
+```{r}
+pitch_ev <- bip_2018 %>%
+  group_by(pitcher, pitcher_name) %>%
+  summarise(avg_ev = mean(launch_speed, na.rm = TRUE), count = n()) %>%
+  filter(count > 100) %>%
+  arrange(desc(avg_ev)) %>%
+  head(10)
+pitch_ev
+```
+
+```{r}
+pitch_density <- bip_2018 %>%
+  group_by(pitcher_name) %>%
+  filter(n() > 100)
+
+ggplot(pitch_density, aes(x = launch_speed, group = pitcher_name)) +
+  geom_density(size = 0.1, color = "red") +
+  labs(x = "Exit Velocity", y = "Density")
+```
+The pitchers here exhibit significantly less variation in exit velocity allowed compared to the batters in part (b). The batter curves displayed substantial deviations, particularly at the high-end exit velocities above 100 MPH, while the pitcher curves are much more tightly grouped to one another and show a very similar shape. This leads me to believe that producing high exit velocities is a skill for batters, while pitchers don't exhibit as much variation in how hard the ball is hit off of them — meaning exit velocity allowed is not as much of an indicator of individual skill.
+
+```{r}
+split_data <- bip_2018 %>%
+  mutate(split = game_date < "2018-07-17") %>%
+  group_by(split, batter, batter_name) %>%
+  summarise(ev = mean(launch_speed, na.rm = TRUE)) %>%
+  pivot_wider(names_from = split, values_from = ev)
+cor(select(split_data, `TRUE`, `FALSE`), use = "complete.obs")
+```
+The correlation between average exit velocity in the first versus second half of the 2018 season is roughly 0.57, indicating a moderate positive relationship - players who hit the ball hard in the first half of the season also tended to, on average, hit the ball hard in the second half of the season.
+
+```{r}
+sc_bip_small <- read.csv("sc_bip_small.csv")
+foo = sc_bip_small %>%
+  mutate(yearID = year(game_date)) %>% 
+  group_by(batter_name, yearID) %>% 
+  summarise(N = n(), launch_angle = launch_angle, launch_speed = launch_speed) %>% 
+  filter(N >= 10) %>% 
+  summarise(avg_la = mean(launch_angle, na.rm = TRUE), 
+            sd_la = sd(launch_angle, na.rm = TRUE), 
+            la10 = quantile(launch_angle, prob = c(0.10), na.rm = TRUE), 
+            la25 = quantile(launch_angle, prob = c(0.25), na.rm = TRUE), 
+            la50 = quantile(launch_angle, prob = c(0.50), na.rm = TRUE), 
+            la75 = quantile(launch_angle, prob = c(0.75), na.rm = TRUE), 
+            la90 = quantile(launch_angle, prob = c(0.90), na.rm = TRUE), 
+            avg_ev = mean(launch_speed, na.rm = TRUE), 
+            sd_ev = sd(launch_speed, na.rm = TRUE), 
+            ev10 = quantile(launch_speed, prob = c(0.10), na.rm = TRUE), 
+            ev25 = quantile(launch_speed, prob = c(0.25), na.rm = TRUE), 
+            ev50 = quantile(launch_speed, prob = c(0.50), na.rm = TRUE), 
+            ev75 = quantile(launch_speed, prob = c(0.75), na.rm = TRUE), 
+            ev90 = quantile(launch_speed, prob = c(0.90), na.rm = TRUE)) %>% 
+  rename(name = batter_name)
+```
+
+
+```{r}
+sc_bip_small <- read.csv("sc_bip_small.csv")
+foo = sc_bip_small %>%
+  mutate(yearID = year(game_date)) %>% 
+  group_by(batter_name, yearID) %>% 
+  summarise(N = n(), launch_angle = launch_angle, launch_speed = launch_speed) %>% 
+  filter(N >= 10) %>% 
+  summarise(avg_la = mean(launch_angle, na.rm = TRUE), 
+            sd_la = sd(launch_angle, na.rm = TRUE), 
+            la10 = quantile(launch_angle, prob = c(0.10), na.rm = TRUE), 
+            la25 = quantile(launch_angle, prob = c(0.25), na.rm = TRUE), 
+            la50 = quantile(launch_angle, prob = c(0.50), na.rm = TRUE), 
+            la75 = quantile(launch_angle, prob = c(0.75), na.rm = TRUE), 
+            la90 = quantile(launch_angle, prob = c(0.90), na.rm = TRUE), 
+            avg_ev = mean(launch_speed, na.rm = TRUE), 
+            sd_ev = sd(launch_speed, na.rm = TRUE), 
+            ev10 = quantile(launch_speed, prob = c(0.10), na.rm = TRUE), 
+            ev25 = quantile(launch_speed, prob = c(0.25), na.rm = TRUE), 
+            ev50 = quantile(launch_speed, prob = c(0.50), na.rm = TRUE), 
+            ev75 = quantile(launch_speed, prob = c(0.75), na.rm = TRUE), 
+            ev90 = quantile(launch_speed, prob = c(0.90), na.rm = TRUE)) %>% 
+  rename(name = batter_name)
+library(Lahman)
+bat_stat <- merge(Batting, People, by = "playerID") %>%
+  filter(stint == 1, AB >= 200) %>%
+  mutate(X1B = H - (X2B + X3B + HR)) %>%
+  mutate(SLG = (X1B + 2*X2B + 3*X3B + 4*HR)/AB) %>%
+  mutate(name = paste(nameFirst, nameLast)) %>%
+  select(name, playerID, yearID, teamID, AB, SLG)
+bat_stat <- inner_join(bat_stat, foo, by = c("name", "yearID"))
+```
+
+
+```{r}
+bar = bat_stat %>% mutate(yearID = ifelse(yearID == 2021, 2020, yearID)) %>%
+  group_by(name, yearID) %>% 
+  summarise(SLG, teamID) %>% 
+  mutate(SLG_next = SLG[match(yearID, yearID-1)]) %>% 
+  mutate(team_next = teamID[match(yearID, yearID-1)]) %>% 
+  mutate(yearID = ifelse(yearID == 2020, 2021, yearID)) %>% 
+  select(-SLG,-teamID)
+bat_stat = inner_join(bat_stat, bar, by = c("name", "yearID")) %>% 
+  mutate(COL = ifelse(team_next == "COL",1,0)) %>% 
+  filter(complete.cases(.))
+```
+
+
+```{r}
+set.seed(13)
+ind = sample(1:nrow(bat_stat), size = 400, replace = FALSE)
+train = bat_stat[ind, ]
+test = bat_stat[-ind, ]
+```
+
+
+```{r}
+m_big <- lm(SLG_next ~ SLG + avg_la + avg_ev + team_next + sd_la + sd_ev +
+              sd_la*avg_la + sd_ev*avg_ev +
+              la10 + la25 + la50 + la75 + la90 +
+              ev10 + ev25 + ev50 + ev75 + ev90,
+            data = train)
+
+m_small <- lm(SLG_next ~ SLG + avg_la + avg_ev + COL,
+              data = train)
+
+m_smaller <- lm(SLG_next ~ SLG + COL, data = train)
+
+sqrt(mean((test$SLG_next - predict(m_big, test))^2))
+sqrt(mean((test$SLG_next - predict(m_small, test))^2))
+sqrt(mean((test$SLG_next - predict(m_smaller, test))^2))
+
+summary(m_big)
+summary(m_small)
+summary(m_smaller)
+
+```
+The m_small model is the best model due to having the lowest RMSE. Statcast variables, notably avg_la and avg_ev, greatly improve predictive capability. avg_ev is the variable that added the most improvement. There were attempts to improve the predictive model, however, none of these produced better RMSE scores than m_small, making the m_small the most dependable model for predicting a player's slugging percentage.
+
+ 
+```{r}
+bwar_pit = 
+  readr::read_csv("https://www.baseball-reference.com/data/war_daily_pitch.txt", 
+                  na = "NULL") %>% 
+	filter(year_ID >= 2017) %>% 
+	select(team_ID, year_ID, WAR) %>% 
+	rename(teamID = team_ID, yearID = year_ID)%>%
+  filter(yearID %in% c(2017, 2018, 2019, 2021)) %>%
+  group_by(teamID, yearID) %>%
+  summarise(WAR = sum(WAR, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+junk_stat <- statcast %>%
+  filter(game_year %in% c(2017, 2018, 2019, 2021)) %>%
+  filter(pitch_type %in% c("SI", "SL", "FS", "CH")) %>%
+  group_by(game_year, home_team) %>%
+  summarise(junk = n(), .groups = "drop")
+
+all_stat <- statcast %>%
+  filter(game_year %in% c(2017, 2018, 2019, 2021)) %>%
+  group_by(game_year, home_team) %>%
+  summarise(total = n(), .groups = "drop")
+
+junk_ratio <- left_join(junk_stat, all_stat, by = c("game_year", "home_team")) %>%
+  mutate(junk_frac = 100 * junk / total) %>%
+  rename(teamID = home_team, yearID = game_year) %>%
+  select(yearID, teamID, junk_frac)
+
+pitch_summary <- Pitching %>%
+  filter(yearID %in% c(2017, 2018, 2019, 2021)) %>%
+  group_by(yearID, teamID) %>%
+  summarise(ER = sum(ER, na.rm = TRUE),
+            IP = sum(IPouts, na.rm = TRUE) / 3,
+            HA = sum(H, na.rm = TRUE),
+            HRA = sum(HR, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(ERA = 9 * ER / IP,
+         HAp9 = HA / IP * 9,
+         HRa9 = HRA / IP * 9)
+
+fix_team <- function(df, col) {
+  df[[col]] <- recode(df[[col]],
+                      "TBA" = "TB", "CHN" = "CHC", "CHA" = "CWS", "KCA" = "KC",
+                      "LAN" = "LAD", "NYN" = "NYM", "NYA" = "NYY", "SDN" = "SD",
+                      "SLN" = "STL", "FLO" = "FLA", "SFN" = "SF", "WAS" = "WSH",
+                      "CHW" = "CWS", "KCR" = "KC", "SDP" = "SD", "SFG" = "SF",
+                      "WSN" = "WSH", "TBR" = "TB")
+  df
+}
+
+pitch_summary <- fix_team(pitch_summary, "teamID")
+junk_ratio <- fix_team(junk_ratio, "teamID")
+bwar_pit <- fix_team(bwar_pit, "teamID")
+
+combo <- left_join(junk_ratio, pitch_summary, by = c("yearID", "teamID"))
+all_pitch <- left_join(combo, bwar_pit, by = c("yearID", "teamID"))
+```
+
+```{r}
+all_pitch %>%
+  filter(yearID == 2021) %>%
+  arrange(desc(junk_frac)) %>%
+  head(10) %>%
+  select(yearID, teamID, junk_frac, ERA, HAp9, HRa9, WAR)
+
+all_pitch %>%
+  filter(yearID == 2021) %>%
+  mutate(status = ifelse(teamID == "SF", "Giants", "Other Teams")) %>%
+  ggplot(aes(x = junk_frac, y = WAR, size = ERA)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  facet_wrap(~status) +
+  labs(
+    x = "Junk Pitch % (SI/SL/FS/CH)",
+    y = "Team WAR",
+    title = "WAR vs Junk Pitch %: Giants vs Other Teams (2021)"
+  )
+
+all_pitch %>%
+  filter(yearID == 2021) %>%
+  mutate(status = ifelse(teamID == "SF", "Giants", "Other Teams")) %>%
+  ggplot(aes(x = HAp9, y = HRa9, size = junk_frac)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  facet_wrap(~status) +
+  labs(
+    x = "Hits Allowed per 9",
+    y = "HR Allowed per 9",
+    title = "HR vs Hits Allowed per 9: Giants vs Other Teams (2021)"
+  )
+```
+The data and visualizations indicate that the 2021 San Francisco Giants were quite successful. The Giants threw a fairly high percentage of junk pitches relative to other teams, and appeared amongst the franchises at the top for WAR. Compared to other teams who utilized similar or even higher percentages of junk pitches, they allowed fewer hits and home runs per 9 innings, indicating their approach was better overall relative to other teams. This suggests many teams used junk pitches, but the Giants were effective at both efficiently utilizing junk pitches and being successful overall.
+
+```{r}
+library(gridExtra)
+
+# Kevin Gausman
+kevin <- statcast %>%
+  filter(pitcher_name == "Kevin Gausman")
+
+gaustats <- kevin %>%
+  filter(pitch_type != "") %>%
+  select(pitcher_name, game_year, pitch_type, release_spin_rate, effective_speed, plate_x, plate_z,
+         pfx_x, pfx_z, release_pos_x, release_pos_z) %>%
+  drop_na() %>%
+  group_by(pitch_type, game_year) %>%
+  summarise(across(c(release_spin_rate:release_pos_z), mean), count = n(), .groups = "drop") %>%
+  group_by(game_year) %>%
+  mutate(usage = count / sum(count))
+
+grid.arrange(
+  ggplot(gaustats, aes(game_year, release_spin_rate, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, effective_speed, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, plate_x, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, plate_z, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, pfx_x, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, pfx_z, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, release_pos_x, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, release_pos_z, color = pitch_type)) + geom_line(),
+  ggplot(gaustats, aes(game_year, usage, color = pitch_type)) + geom_line()
+)
+
+# Logan Webb
+logan <- statcast %>%
+  filter(pitcher_name == "Logan Webb")
+
+loganStats <- logan %>%
+  filter(pitch_type != "") %>%
+  select(pitcher_name, game_year, pitch_type, release_spin_rate, effective_speed, plate_x, plate_z,
+         pfx_x, pfx_z, release_pos_x, release_pos_z) %>%
+  drop_na() %>%
+  group_by(pitch_type, game_year) %>%
+  summarise(across(c(release_spin_rate:release_pos_z), mean), count = n(), .groups = "drop") %>%
+  group_by(game_year) %>%
+  mutate(usage = count / sum(count))
+
+grid.arrange(
+  ggplot(loganStats, aes(game_year, release_spin_rate, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, effective_speed, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, plate_x, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, plate_z, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, pfx_x, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, pfx_z, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, release_pos_x, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, release_pos_z, color = pitch_type)) + geom_line(),
+  ggplot(loganStats, aes(game_year, usage, color = pitch_type)) + geom_line()
+)
+
+# Anthony DeSclafani
+desclafani <- statcast %>%
+  filter(pitcher_name == "Anthony DeSclafani")
+
+descStats <- desclafani %>%
+  filter(pitch_type != "") %>%
+  select(pitcher_name, game_year, pitch_type, release_spin_rate, effective_speed, plate_x, plate_z,
+         pfx_x, pfx_z, release_pos_x, release_pos_z) %>%
+  drop_na() %>%
+  group_by(pitch_type, game_year) %>%
+  summarise(across(c(release_spin_rate:release_pos_z), mean), count = n(), .groups = "drop") %>%
+  group_by(game_year) %>%
+  mutate(usage = count / sum(count))
+
+grid.arrange(
+  ggplot(descStats, aes(game_year, release_spin_rate, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, effective_speed, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, plate_x, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, plate_z, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, pfx_x, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, pfx_z, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, release_pos_x, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, release_pos_z, color = pitch_type)) + geom_line(),
+  ggplot(descStats, aes(game_year, usage, color = pitch_type)) + geom_line()
+)
+
+# Alex Wood
+alex <- statcast %>%
+  filter(pitcher_name == "Alex Wood")
+
+alexStats <- alex %>%
+  filter(pitch_type != "") %>%
+  select(pitcher_name, game_year, pitch_type, release_spin_rate, effective_speed, plate_x, plate_z,
+         pfx_x, pfx_z, release_pos_x, release_pos_z) %>%
+  drop_na() %>%
+  group_by(pitch_type, game_year) %>%
+  summarise(across(c(release_spin_rate:release_pos_z), mean), count = n(), .groups = "drop") %>%
+  group_by(game_year) %>%
+  mutate(usage = count / sum(count))
+
+grid.arrange(
+  ggplot(alexStats, aes(game_year, release_spin_rate, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, effective_speed, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, plate_x, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, plate_z, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, pfx_x, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, pfx_z, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, release_pos_x, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, release_pos_z, color = pitch_type)) + geom_line(),
+  ggplot(alexStats, aes(game_year, usage, color = pitch_type)) + geom_line()
+)
+```
+The 2021 Giants pitchers excelled by leading the league in WAR and having excellent control over several contact metrics (HRA9 and ERA).Among Kevin Gausman, Logan Webb, Anthony DeSclafani, and Alex Wood, the most evident trend that emerged was a significant increase in the amount of "offspeed" and "breaking" pitches-primarily sliders and changeups. The increased usage of these "junk" pitches led to a lower ability to square up the hard stuff from the Giants.All of the pitchers made minor mechanical changes in their pitch movement and release points, even showing a level of refinement to their minor modifications. While there was variance among the spin rates, good command of pitches and mixing it up seemed to alleviate all of that. The shared changes of the Giants pitchers, particularly the increase in the "junk" pitch, seemed to contribute to the pitching success of the Giants in 2021.
+
+

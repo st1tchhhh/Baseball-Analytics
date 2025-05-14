@@ -1,0 +1,490 @@
+---
+title: "Lab 3"
+author: "Xiangchen Guo"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+**What I'm doing:** This lab fits polynomial and interaction models, and compares models using ANOVA.
+
+```{r}
+library(tidyverse)
+library(Lahman)
+
+fields_data <- read_csv("fields.csv")
+season_2016 <- read_csv("all2016.csv", col_names = pull(fields_data, Header), na = character()) %>%
+  rename_with(tolower)
+
+season_2016 <- season_2016 %>%
+  mutate(total_runs = home_score_ct + away_score_ct, 
+         inning_id = paste(game_id, inn_ct, bat_home_id), 
+         runs_gained = (bat_dest_id > 3) + (run1_dest_id > 3) + (run2_dest_id > 3) + (run3_dest_id > 3))
+
+inning_summary <- season_2016 %>% 
+  group_by(inning_id) %>% 
+  summarise(total_outs = sum(event_outs_ct), 
+            runs_scored = sum(runs_gained), 
+            initial_runs = first(total_runs), 
+            max_runs = runs_scored + initial_runs) 
+
+season_2016 <- season_2016 %>% 
+  inner_join(inning_summary, by = "inning_id") %>% 
+  mutate(runs_expected = max_runs - total_runs)
+
+season_2016 <- season_2016 %>% 
+  mutate(base_occupancy = paste(ifelse(base1_run_id != "",1,0), 
+                                ifelse(base2_run_id != "",1,0), 
+                                ifelse(base3_run_id != "",1,0), sep = ""), 
+         game_state = paste(base_occupancy, outs_ct))
+
+season_2016 <- season_2016 %>% 
+  mutate(new_runner1 = as.numeric(run1_dest_id == 1 | bat_dest_id == 1), 
+         new_runner2 = as.numeric(run1_dest_id == 2 | run2_dest_id == 2 | bat_dest_id == 2), 
+         new_runner3 = as.numeric(run1_dest_id == 3 | run2_dest_id == 3 | run3_dest_id == 3 | bat_dest_id == 3), 
+         updated_outs = outs_ct + event_outs_ct, 
+         updated_base_occupancy = paste(new_runner1, new_runner2, new_runner3, sep = ""), 
+         updated_game_state = paste(updated_base_occupancy, updated_outs)) %>% 
+  filter((game_state != updated_game_state) | (runs_gained > 0)) %>% 
+  filter(total_outs == 3)
+
+run_matrix <- season_2016 %>% 
+  group_by(game_state) %>% 
+  summarize(mean_runs = mean(runs_expected)) %>% 
+  mutate(outs_recorded = substr(game_state, 5, 5)) %>% 
+  arrange(outs_recorded)
+
+run_expectancy <- matrix(round(run_matrix$mean_runs, 2), 8, 3)
+dimnames(run_expectancy)[[1]] <- c("000","001","010","011", "100","101","110","111")
+dimnames(run_expectancy)[[2]] <- c("0 outs", "1 out", "2 outs")
+
+season_2016 <- season_2016 %>% 
+  left_join(select(run_matrix, -outs_recorded), by = "game_state") %>% 
+  rename(runs_initial = mean_runs) %>% 
+  left_join(select(run_matrix, -outs_recorded), by = c("updated_game_state" = "game_state")) %>% 
+  rename(runs_new = mean_runs) %>% 
+  replace_na(list(runs_new = 0)) %>% 
+  mutate(run_impact = runs_new - runs_initial + runs_gained) 
+
+stolen_base_analysis <- season_2016 %>% 
+  group_by(event_cd) %>% 
+  summarise(frequency = n(), avg_run_impact = mean(run_impact)) %>% 
+  mutate(proportion = frequency/sum(frequency))
+sb_impact <- stolen_base_analysis %>% filter(event_cd == 4) %>% select(avg_run_impact)
+cs_impact <- stolen_base_analysis %>% filter(event_cd == 6) %>% select(avg_run_impact)
+
+catcher_performance <- season_2016 %>% 
+  group_by(pos2_fld_id) %>%
+  summarize(sb_allowed = sum(run1_sb_fl) + sum(run2_sb_fl) + sum(run3_sb_fl), 
+            cs_made = sum(run1_cs_fl) + sum(run2_cs_fl) + sum(run3_cs_fl), 
+            sb_impact = sb_allowed * sb_impact$avg_run_impact, 
+            cs_impact = cs_made * cs_impact$avg_run_impact, 
+            total_impact = sb_impact + cs_impact)
+colnames(catcher_performance)[1] <- "retroID"
+
+data("People")
+player_names <- People %>% 
+  mutate(full_name = paste(nameFirst, nameLast)) %>% 
+  select(retroID, full_name)
+catchers_with_names <- merge(catcher_performance, player_names, by = 'retroID')
+top_catchers <- catchers_with_names %>% 
+  arrange(total_impact) %>% 
+  select(full_name) %>% 
+  head(10)
+bot_catchers <- catchers_with_names %>% 
+  arrange(desc(total_impact)) %>% 
+  select(full_name) %>% 
+  head(10)
+```
+```{r}
+print(top_catchers)
+```
+```{r}
+print(bot_catchers)
+```
+
+```{r}
+steal_attempts <- season_2016 %>%
+  mutate(inning_state = paste(inn_ct, game_state)) %>%
+  group_by(inning_state, event_cd) %>%
+  summarise(avg_run_impact = mean(run_impact), attempts = n(), .groups = "drop")
+
+stolen_bases <- steal_attempts %>% filter(event_cd == 4)
+caught_stealing <- steal_attempts %>% filter(event_cd == 6)
+
+steal_analysis <- merge(
+  stolen_bases %>% select(-event_cd),
+  caught_stealing %>% select(-event_cd),
+  by = "inning_state"
+)
+
+colnames(steal_analysis)[c(2, 3, 4, 5)] <- c("sb_value", "sb_attempts", "cs_value", "cs_attempts")
+
+break_even_rates <- steal_analysis %>%
+  mutate(total_attempts = sb_attempts + cs_attempts) %>%
+  filter(total_attempts >= 30) %>%
+  mutate(break_even_rate = (-cs_value) / (sb_value - cs_value)) %>%
+  arrange(break_even_rate) %>%
+  head(3)
+
+print(break_even_rates)
+```
+Attempt a steal in late innings (7th–9th) with no outs or one out, if the runner’s success rate is above 67%.
+
+
+
+```{r, eval = FALSE}
+season_2016 <- season_2016 %>% 
+  filter((game_state != updated_game_state) | (runs_gained > 0))
+
+season_2016C <- season_2016 %>% 
+  filter(total_outs == 3, bat_event_fl == TRUE)
+
+season_2016C <- season_2016C %>% 
+  mutate(updated_game_state = gsub("[0-1]{3} 3", "3", updated_game_state))
+
+t_matrix <- season_2016C %>%
+  select(game_state, updated_game_state) %>%
+  table()
+
+p_matrix <- prop.table(t_matrix, 1)
+p_matrix <- rbind(p_matrix, c(rep(0, ncol(p_matrix) - 1), 1))
+
+season_2016C <- season_2016C %>%
+  mutate(home_team_id = str_sub(game_id, 1, 3),
+         batting_team = ifelse(bat_home_id == 0, away_team_id, home_team_id))
+
+team_transitions <- season_2016C %>%
+  group_by(batting_team, game_state, updated_game_state) %>%
+  count()
+
+foo <- NULL
+for(state in unique(team_transitions$game_state)){
+  team_state_transitions <- season_2016C %>%
+    filter(game_state == state) %>%
+    group_by(batting_team, game_state, updated_game_state) %>%
+    tally()
+  
+  sln_transitions <- team_state_transitions %>%
+    filter(batting_team == "SLN") %>%
+    mutate(p = n / sum(n))
+  
+  all_transitions <- season_2016C %>%
+    filter(game_state == state) %>%
+    group_by(updated_game_state) %>%
+    tally() %>%
+    mutate(p = n / sum(n))
+  
+  bar <- sln_transitions %>%
+    inner_join(all_transitions, by = "updated_game_state") %>%
+    mutate(p_est = (n.x / (1274 + n.x) * p.x) + (1274 / (1274 + n.x) * p.y)) %>%
+    mutate(p_est = p_est / sum(p_est)) %>%
+    select(game_state, updated_game_state, p_est)
+  
+  foo <- rbind(foo, bar[, -1])
+}
+
+library(reshape2)
+transition_matrix <- dcast(melt(foo, id.vars=c("game_state", "updated_game_state")), 
+                           game_state ~ updated_game_state) %>%
+  replace(is.na(.), 0)
+
+transition_matrix <- transition_matrix[, -1]
+p_matrix_sln <- rbind(as.matrix(transition_matrix), rep(0, ncol(transition_matrix)))
+
+```
+
+```{r}
+season_2016 <- season_2016 %>% 
+  filter((game_state != updated_game_state) | (runs_gained > 0))
+
+season_2016C <- season_2016 %>% 
+  filter(total_outs == 3, bat_event_fl == TRUE)
+
+season_2016C <- season_2016C %>% 
+  mutate(updated_game_state = gsub("[0-1]{3} 3", "3", updated_game_state))
+
+t_matrix <- season_2016C %>%
+  select(game_state, updated_game_state) %>%
+  table()
+
+p_matrix <- prop.table(t_matrix, 1)
+p_matrix <- rbind(p_matrix, c(rep(0, ncol(p_matrix) - 1), 1))
+
+season_2016C <- season_2016C %>%
+  mutate(home_team_id = str_sub(game_id, 1, 3),
+         batting_team = ifelse(bat_home_id == 0, away_team_id, home_team_id))
+
+team_transitions <- season_2016C %>%
+  group_by(batting_team, game_state, updated_game_state) %>%
+  count()
+
+foo <- NULL
+for(state in unique(team_transitions$game_state)){
+  team_state_transitions <- season_2016C %>%
+    filter(game_state == state) %>%
+    group_by(batting_team, game_state, updated_game_state) %>%
+    tally()
+  
+  sln_transitions <- team_state_transitions %>%
+    filter(batting_team == "SLN") %>%
+    mutate(p = n / sum(n))
+  
+  all_transitions <- season_2016C %>%
+    filter(game_state == state) %>%
+    group_by(updated_game_state) %>%
+    tally() %>%
+    mutate(p = n / sum(n))
+  
+  bar <- sln_transitions %>%
+    inner_join(all_transitions, by = "updated_game_state") %>%
+    mutate(p_est = (n.x / (1274 + n.x) * p.x) + (1274 / (1274 + n.x) * p.y)) %>%
+    mutate(p_est = p_est / sum(p_est)) %>%
+    select(game_state, updated_game_state, p_est)
+  
+  foo <- rbind(foo, bar[, -1])
+}
+
+library(reshape2)
+transition_matrix <- dcast(melt(foo, id.vars=c("game_state", "updated_game_state")), 
+                           game_state ~ updated_game_state) %>%
+  replace(is.na(.), 0)
+
+transition_matrix <- transition_matrix[, -1]
+p_matrix_sln <- rbind(as.matrix(transition_matrix), rep(0, ncol(transition_matrix)))
+p_matrix_3_sln <- p_matrix_sln %*% p_matrix_sln %*% p_matrix_sln
+p_matrix_3_sln[1, ncol(p_matrix_sln)]
+
+p_matrix_3 <- p_matrix %*% p_matrix %*% p_matrix
+p_matrix_3 %>%
+  as_tibble(rownames = "game_state") %>%
+  filter(game_state == "000 0") %>%
+  gather(key = "updated_game_state", value = "prob", -game_state) %>%
+  arrange(desc(prob)) %>% 
+  head()
+```
+
+```{r}
+count_runners_out <- function(state) {
+  state %>% str_split("") %>% pluck(1) %>% as.numeric() %>% sum(na.rm = TRUE)
+}
+
+runners_out <- sapply(row.names(t_matrix), count_runners_out)[-ncol(p_matrix_sln)]
+r <- outer(runners_out + 1, runners_out, FUN = "-")
+names(r) <- names(t_matrix)[-ncol(p_matrix_sln)]
+r <- cbind(r, rep(0, nrow(r)))
+
+set.seed(123)
+simulate_half_inning <- function(p, r, start = 1) {
+  current_state <- start
+  path <- NULL
+  runs <- 0
+  
+  while (current_state < ncol(p)) {
+    next_state <- sample(1:ncol(p), size = 1, prob = p[current_state, ])
+    path <- c(path, next_state)
+    runs <- runs + r[current_state, next_state]
+    current_state <- next_state
+  }
+  
+  return(runs)
+}
+
+b <- 1e5
+runs_j_sln <- function(j) {
+  mean(replicate(b, simulate_half_inning(p_matrix_sln, r, j)))
+}
+
+library(doMC)
+library(parallel)
+registerDoMC(cores = detectCores() - 2)
+RNGkind(kind = "L'Ecuyer-CMRG")
+
+re_bat_sln <- foreach(j = 1:(ncol(p_matrix_sln) - 1)) %dopar% runs_j_sln(j) %>%
+  unlist() %>%
+  matrix(nrow = 8, ncol = 3, byrow = TRUE,
+         dimnames = list(c("000","001","010","011",
+                           "100","101","110","111"),
+                         c("0 outs", "1 out", "2 outs")))
+round(re_bat_sln, 3)
+```
+ 
+
+##(a)
+```{r}
+library(tidyverse)
+d.single <- season_2016 %>% 
+  filter(event_cd == 20)
+```
+
+##(b)
+```{r}
+data_3b <- d.single %>%
+  group_by(game_state, updated_game_state) %>%
+  summarize(state_freq = n(), .groups = "drop")
+print(data_3b)
+```
+
+##(c)
+```{r}
+data_3b %>%
+  filter(str_detect(game_state, "100")) %>%
+  arrange(desc(state_freq)) %>%
+  head(5)
+```
+
+##(d)
+```{r}
+data_3d <- d.single %>%
+  filter(str_detect(game_state, "110"))
+run_scored <- table(data_3d$runs_gained)
+prob_run_scored <- (run_scored[2] + run_scored[3]) / sum(run_scored)
+cat("The probability a run is scored on the play is:", prob_run_scored)
+```
+
+
+```{r}
+P <- matrix(c(0.3, 0.7, 0, 0,
+              0, 0.3, 0.7, 0,
+              0, 0, 0.3, 0.7,
+              0, 0, 0, 1), 
+            nrow = 4, ncol = 4, byrow = TRUE)
+```
+
+##(a)
+```{r}
+P2 <- P %*% P
+
+print("Transition matrix after 2 plate appearances (P2):")
+print(P2)
+
+prob_0_to_1_out <- P2[1, 2]
+print(paste("Probability of moving from 0 outs to 1 out after two plate appearances:", prob_0_to_1_out))
+```
+##(b)
+```{r}
+I <- diag(3)
+Q <- P[1:3, 1:3]
+N <- solve(I - Q)
+print("Fundamental matrix N:")
+print(N)
+expected_PAs <- sum(N[1, ])
+print(paste("Expected number of plate appearances in one inning:", expected_PAs))
+```
+
+
+```{r}
+fields <- read_csv("fields.csv")
+season_1968 <- read_csv("all1968.csv", col_names = pull(fields, Header), na = character()) %>%
+  rename_with(tolower)
+
+season_1968 <- season_1968 %>%
+  mutate(runs = as.numeric(away_score_ct) + as.numeric(home_score_ct),
+         half_inning = paste(game_id, inn_ct, bat_home_id),
+         runs_scored = (bat_dest_id > 3) + (run1_dest_id > 3) + 
+                       (run2_dest_id > 3) + (run3_dest_id > 3))
+
+half_innings_1968 <- season_1968 %>%
+  group_by(half_inning) %>%
+  summarize(outs_inning = sum(as.numeric(event_outs_ct), na.rm = TRUE),
+            runs_inning = sum(as.numeric(runs_scored), na.rm = TRUE),
+            runs_start = first(runs),
+            max_runs = runs_inning + runs_start)
+
+season_1968 <- season_1968 %>%
+  inner_join(half_innings_1968, by = "half_inning") %>%
+  mutate(bases = paste(ifelse(base1_run_id > '', 1, 0),
+                       ifelse(base2_run_id > '', 1, 0),
+                       ifelse(base3_run_id > '', 1, 0), sep = ""),
+         state = paste(bases, outs_ct),
+         nrunner1 = as.numeric(run1_dest_id == 1 | bat_dest_id == 1),
+         nrunner2 = as.numeric(run1_dest_id == 2 | run2_dest_id == 2 | bat_dest_id == 2),
+         nrunner3 = as.numeric(run1_dest_id == 3 | run2_dest_id == 3 | run3_dest_id == 3 | bat_dest_id == 3),
+         nouts = as.numeric(outs_ct) + as.numeric(event_outs_ct),
+         new_bases = paste(nrunner1, nrunner2, nrunner3, sep = ""),
+         new_state = paste(new_bases, nouts))
+
+season_1968 <- season_1968 %>%
+  filter((state != new_state) | (runs_scored > 0))
+
+season_1968c <- season_1968 %>%
+  filter(outs_inning == 3, bat_event_fl == TRUE) %>%
+  mutate(new_state = gsub("[0-1]{3} 3", "3", new_state))
+
+t_matrix_1968 <- season_1968c %>%
+  select(state, new_state) %>%
+  table()
+
+p_matrix_1968 <- prop.table(t_matrix_1968, 1)
+p_matrix_1968 <- rbind(p_matrix_1968, c(rep(0, ncol(p_matrix_1968) - 1), 1))
+
+num_havent_scored <- function(s) {
+  s %>%
+    str_split("") %>%
+    pluck(1) %>%
+    as.numeric() %>%
+    sum(na.rm = TRUE)
+}
+
+runners_out_1968 <- sapply(row.names(t_matrix_1968), num_havent_scored)[-ncol(p_matrix_1968)]
+r_1968 <- outer(runners_out_1968 + 1, runners_out_1968, FUN = "-")
+names(r_1968) <- names(t_matrix_1968)[-ncol(p_matrix_1968)]
+r_1968 <- cbind(r_1968, rep(0, nrow(r_1968)))
+simulate_half_inning <- function(p, r, start = 1) {
+  s <- start
+  runs <- 0
+  while (s < ncol(p)) {
+    s_new <- sample(1:ncol(p), size = 1, prob = p[s, ])
+    runs <- runs + r[s, s_new]
+    s <- s_new
+  }
+  return(runs)
+}
+set.seed(987654) 
+b_sim <- 20000 
+runs_j_1968 <- function(j) {
+  mean(replicate(b_sim, simulate_half_inning(p_matrix_1968, r_1968, j)))
+}
+registerDoMC(cores = detectCores() - 2)
+RNGkind(kind = "L'Ecuyer-CMRG")
+
+re_bat_1968 <- foreach(j = 1:24) %dopar% runs_j_1968(j) %>%
+  unlist() %>%
+  matrix(nrow = 8, ncol = 3, byrow = TRUE,
+         dimnames = list(c("000","001","010","011",
+                           "100","101","110","111"),
+                         c("0 outs", "1 out", "2 outs")))
+```
+
+```{r}
+set.seed(987654)
+b_sim <- 10000
+runs_j <- function(j) {
+  mean(replicate(b_sim, simulate_half_inning(p_matrix, r, j)))
+}
+registerDoMC(cores = detectCores() - 2)
+RNGkind(kind = "L'Ecuyer-CMRG")
+re_bat <- foreach(j = 1:24) %dopar% runs_j(j) %>%
+  unlist() %>%
+  matrix(nrow = 8, ncol = 3, byrow = TRUE,
+         dimnames = list(c("000","001","010","011",
+                           "100","101","110","111"),
+                         c("0 outs", "1 out", "2 outs")))
+run_expectancy_diff <- round(re_bat - re_bat_1968, 3)
+print("run expectancy matrix (1968):")
+print(round(re_bat_1968, 3))
+
+print("run expectancy matrix (2016):")
+print(round(re_bat, 3))
+
+print("difference (2016 - 1968):")
+print(run_expectancy_diff)
+
+```
+Based on the difference here, we conclude 2016 has higher expectancy. 
+

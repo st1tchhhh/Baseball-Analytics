@@ -1,0 +1,168 @@
+---
+title: "Lab 1"
+author: "Xiangchen Guo"
+output: pdf_document
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**What I'm doing:** This lab performs exploratory data analysis using dplyr and ggplot2 to summarize and visualize the data.
+
+```{r}
+
+library(Lahman)
+library(dplyr)
+data <- Teams %>%
+  mutate(
+    OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+    SLG = (H + X2B + 2 * X3B + 3 * HR) / AB,
+    OPS = OBP + SLG,
+    WHIP = (BB + HA) / (IPouts / 3) 
+  ) %>%
+  select(yearID, teamID, R, OPS, WHIP, FP) %>%
+  filter(!is.na(OPS), !is.na(WHIP), !is.na(FP), !is.na(R))
+head(data)
+
+#Part 1
+model1 <- lm(R ~ OPS + WHIP + FP, data = data)
+summary(model1)
+par(mfrow=c(2,2)) 
+plot(model1)
+```
+The plots shows up problems that: 
+(1) residuals do not appear randomly around 0; 
+(2) the residuals deviate significantly from the diagonal line; 
+(3) the model fails to account for variability across different scoring levels, potentially due to missing factors or extreme values.
+```{r}
+#Part 2
+data$year_factor <- as.factor(data$yearID)  
+league_averages <- data %>%
+  group_by(yearID) %>%
+  summarise(avgOPS = mean(OPS, na.rm = TRUE),
+            avgWHIP = mean(WHIP, na.rm = TRUE),
+            avgFP = mean(FP, na.rm = TRUE))
+data <- data %>%
+  left_join(league_averages, by = "yearID") %>%
+  mutate(OPSscale = OPS / avgOPS,
+         WHIPscale = WHIP / avgWHIP,
+         FPscale = FP / avgFP)
+model2 <- lm(log(R) ~ OPSscale + WHIPscale + FPscale + year_factor, data = data)
+summary(model2)
+par(mfrow = c(2,2))
+plot(model2)
+
+```
+
+Model 2 is an improvement over Model 1 in that it incorporates a year variable. It assists in depicting trends over years in the league and smoothes out the Residuals vs Fitted and Scale-Location plots, balancing residuals. With fewer high-leverage points, and according to the Q-Q plot, the data is nearer to being normally distributed, and therefore, the model can accurately model changing scores over years.
+```{r}
+library(ggplot2)
+batters <- Batting %>%
+  group_by(playerID) %>%
+  summarise(seasons = n_distinct(yearID)) %>%
+  filter(seasons >= 10) %>%
+  top_n(3, seasons) 
+
+pitchers <- Pitching %>%
+  group_by(playerID) %>%
+  summarise(seasons = n_distinct(yearID)) %>%
+  filter(seasons >= 10) %>%
+  top_n(3, seasons)  
+
+batting_stats <- Batting %>%
+  filter(playerID %in% batters$playerID) %>%
+  mutate(SBpct = SB / (SB + CS),
+         OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+         SLG = (H + X2B + 2 * X3B + 3 * HR) / AB,
+         OPS = OBP + SLG) %>%
+  select(playerID, yearID, G, AB, R, H, X2B, X3B, HR, RBI, SB, CS, SBpct, BB, SO, OBP, SLG, OPS)
+batting_stats_clean <- batting_stats %>%
+  filter(!is.na(OPS)) 
+
+pitching_stats <- Pitching %>%
+  filter(playerID %in% pitchers$playerID) %>%
+  mutate(WHIP = (BB + H) / (IPouts / 3),
+         SOper9 = (SO / (IPouts / 3)) * 9,
+         SOperBB = SO / BB) %>%
+  select(playerID, yearID, W, L, IPouts, H, ER, HR, BB, HBP, SO, ERA, WHIP, SOper9, SOperBB)
+
+career_batting <- batting_stats %>%
+  group_by(playerID) %>%
+  summarise(G = sum(G), AB = sum(AB), R = sum(R), H = sum(H),
+            X2B = sum(X2B), X3B = sum(X3B), HR = sum(HR),
+            RBI = sum(RBI), SB = sum(SB), CS = sum(CS), BB = sum(BB), 
+            SO = sum(SO), OBP = mean(OBP, na.rm = TRUE), 
+            SLG = mean(SLG, na.rm = TRUE), OPS = mean(OPS, na.rm = TRUE))
+
+career_pitching <- pitching_stats %>%
+  group_by(playerID) %>%
+  summarise(W = sum(W), L = sum(L), IPouts = sum(IPouts), 
+            H = sum(H), ER = sum(ER), HR = sum(HR), BB = sum(BB),
+            HBP = sum(HBP), SO = sum(SO), ERA = mean(ERA, na.rm = TRUE),
+            WHIP = mean(WHIP, na.rm = TRUE), 
+            SOper9 = mean(SOper9, na.rm = TRUE), 
+            SOperBB = mean(SOperBB, na.rm = TRUE))
+#Part2
+ggplot(batting_stats_clean, aes(x = yearID, y = OPS, color = playerID)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(title = "OPS Career Trajectory for Selected Batters", x = "Year", y = "OPS") 
+ggplot(pitching_stats, aes(x = yearID, y = ERA, color = playerID)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(title = "ERA Career Trajectory for Selected Pitchers", x = "Year", y = "ERA") 
+
+```
+
+
+```{r}
+gibson_1968 <- Pitching %>%
+  filter(playerID == "gibsobo01" & yearID == 1968) %>%
+  select(playerID, yearID, GS, CG, SO, BB, IPouts, H)
+ 
+# (a)
+fraction_completed <- gibson_1968$CG / gibson_1968$GS
+fraction_completed
+# (b)
+so_bb_ratio <- gibson_1968$SO / gibson_1968$BB
+so_bb_ratio
+# (c)
+innings_pitched <- gibson_1968$IPouts / 3
+innings_pitched
+# (d)
+whip <- (gibson_1968$H + gibson_1968$BB) / innings_pitched
+whip
+cat("a) Fraction of games completed by Gibson:", fraction_completed , "\n")
+cat("b) Strikeout to walk ratio:", so_bb_ratio, "\n")
+cat("c) Innings pitched by Gibson:", innings_pitched, "\n")
+cat("d) WHIP:", whip, "\n")
+```
+ 
+```{r}
+game_data <- data.frame(
+  Duration = 139,  
+  Attendance = 0,
+  VisitorH = 8,  
+  VisitorD = 2,  
+  VisitorT = 0,
+  VisitorHR = 1, 
+  VisitorBB = 4, 
+  VisitorHBP = 0, 
+  VisitorSF = 0,  
+  VisitorAB = 32
+)
+game_duration_hours <- game_data$Duration %/% 60
+game_duration_minutes <- game_data$Duration %% 60
+extra_base_hits <- game_data$VisitorD + game_data$VisitorT + game_data$VisitorHR
+obp <- (game_data$VisitorH + game_data$VisitorBB + game_data$VisitorHBP) /
+       (game_data$VisitorAB + game_data$VisitorBB + game_data$VisitorHBP + game_data$VisitorSF)
+
+cat("a) Time:", game_duration_hours, "hours", game_duration_minutes, "minutes\n")
+cat("b) Attendance maybe missing or unreported in retrosheet logs.\n")
+cat("c) Phillies extra base hits:", extra_base_hits, "\n")
+cat("d) Phillies on base percentage:", obp, "\n")
+
+```
+

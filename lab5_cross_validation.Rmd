@@ -1,0 +1,166 @@
+---
+title: "Lab 5"
+author: "Xiangchen Guo"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,warning = FALSE,message = FALSE}
+library(shiny)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(Lahman)
+library(tidyr)
+library(DT)
+```
+```{r,warning = FALSE,message = FALSE}
+# Statistics of batters
+batting_data <- Batting %>%
+  left_join(People, by = "playerID") %>%
+  mutate(PlayerName = paste(nameFirst, nameLast)) %>%
+  filter(AB > 0)
+
+# Pitcher statistics
+pitching_data <- Pitching %>%
+  left_join(People, by = "playerID") %>%
+  mutate(PlayerName = paste(nameFirst, nameLast)) %>%
+  filter(IPouts > 0)
+```
+```{r,warning = FALSE,message = FALSE}
+ui <- fluidPage(
+  div(
+    h2("Player Career Trajectory Display"),
+    style = "text-align: center; margin-bottom: 30px;"
+  ),
+
+  fluidRow(
+    column(
+      width = 4,
+      wellPanel(
+        selectInput("player_type", "Select player type", 
+                    choices = c("HITTER", "pitcher")),
+        uiOutput("player_select"),
+        uiOutput("stat_select")
+      )
+    ),
+    column(
+      width = 8,
+      plotlyOutput("career_plot", height = "400px")
+    )
+  ),
+  h4("Summary of Player Career Indicators", style = "margin-top: 30px;"),
+  tableOutput("career_summary"),
+  hr(),
+  fluidRow(
+    column(
+      width = 12,
+      h4("Player Career Annual Data", style = "margin-top: 20px;"),
+      dataTableOutput("career_table")
+    )
+  )
+)
+```
+```{r,warning = FALSE,message = FALSE}
+server <- function(input, output, session) {
+  # Update the player list based on the selected type
+  output$player_select <- renderUI({
+    if (input$player_type == "HITTER") {
+      player_choices <- unique(batting_data$PlayerName)
+    } else {
+      player_choices <- unique(pitching_data$PlayerName)
+    }
+    selectInput("player_name", "Select players", choices = sort(player_choices))
+  })
+
+  # Update optional indicators based on player type
+  output$stat_select <- renderUI({
+  if (input$player_type == "HITTER") {
+    stats_choices <- c("Home Run (HR)" = "HR",
+                       "batting average (AVG)" = "AVG",
+                       "score (R)" = "R",
+                       "dot (RBI)" = "RBI")
+  } else {
+    stats_choices <- c("Self blame score (ERA)" = "ERA",
+                       "strikeout (SO)" = "SO",
+                       "Number of wins (W)" = "W",
+                       "Save (SV)" = "SV")
+  }
+  checkboxGroupInput("stat", 
+  "Select the statistical indicators to be displayed (multiple choices are allowed)", 
+  choices = stats_choices, selected = stats_choices[1])
+  })
+  
+  output$career_table <- renderDataTable({
+  req(input$player_name)
+
+  if (input$player_type == "HITTER") {
+      df <- batting_data %>% filter(PlayerName == input$player_name)
+      df <- df %>% mutate(AVG = ifelse(AB > 0, H / AB, NA))
+      df <- df %>% select(yearID, G, AB, R, H, HR, RBI, AVG)
+    } else {
+      df <- pitching_data %>% filter(PlayerName == input$player_name)
+      df <- df %>% select(yearID, G, W, L, ERA, SO, SV)
+    }
+  
+    datatable(df, options = list(pageLength = 10), rownames = FALSE)
+  })
+
+
+  output$career_plot <- renderPlotly({
+    req(input$player_name, input$stat)
+    if (length(input$stat) == 0) return(NULL)
+    if (input$player_type == "HITTER") {
+      df <- batting_data %>% filter(PlayerName == input$player_name)
+      df <- df %>% mutate(AVG = ifelse(AB > 0, H / AB, NA))
+    } else {
+      df <- pitching_data %>% filter(PlayerName == input$player_name)
+    }
+  
+    df_long <- df %>%
+    select(yearID, all_of(input$stat)) %>%
+    pivot_longer(-yearID, names_to = "Stat", values_to = "Value") %>%
+    filter(!is.na(Value))
+    df_long$yearID <- as.numeric(df_long$yearID)
+    p <- ggplot(df_long, 
+                aes(x = yearID, y = Value, color = Stat, group = Stat,
+                    text = paste0("Year: ", yearID, "<br>Index: ",
+      Stat, "<br>Num: ", round(Value, 3)))) +
+      geom_line(size = 0.5) +
+      geom_point(size = 2) +
+      labs(title = paste(
+        input$player_name, 
+        "- Changes in multiple statistical indicators"),
+           x = "Year", y = "Num") +
+      theme_minimal()
+    ggplotly(p, tooltip = "text")
+  })
+
+  output$career_summary <- renderTable({
+    req(input$player_name, input$stat)
+  
+    if (input$player_type == "HITTER") {
+      df <- batting_data %>%
+        filter(PlayerName == input$player_name) %>%
+        mutate(AVG = ifelse(AB > 0, H / AB, NA))
+    } else {
+      df <- pitching_data %>%
+        filter(PlayerName == input$player_name)
+    }
+  
+    df_sum <- df %>%
+      select(all_of(input$stat)) %>%
+      summarise(across(everything(), ~round(sum(.x, na.rm = TRUE), 2)))
+  
+    colnames(df_sum) <- paste0("Cumulative-", colnames(df_sum))
+    df_sum
+  })
+
+}
+shinyApp(ui = ui, server = server)
+```
+

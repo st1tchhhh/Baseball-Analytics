@@ -1,0 +1,277 @@
+---
+title: "Lab 2"
+author: "Xiangchen Guo"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+**What I'm doing:** This lab applies linear regression modeling techniques using lm(), and evaluates model fit and residuals.
+
+```{r}
+library(Lahman)
+library(dplyr)
+library(tidyverse)
+teams_data <- Teams %>%
+  select(yearID, teamID, AB, SO, H, HR, R, RA, W, L) %>%
+  filter(yearID >= 1990, !yearID %in% c(1994, 1995, 2020))
+colnames(teams_data) [1:2] <- c('year_ID', 'team_ID')
+head(teams_data)
+```
+
+```{r, eval = FALSE}  
+bwar_bat = readr::read_csv("https://www.baseball-reference.com/data/war_daily_bat.txt", na = "NULL")
+bwar_pit = readr::read_csv("https://www.baseball-reference.com/data/war_daily_pitch.txt", na = "NULL")
+```  
+
+```{r}
+bwar_bat = readr::read_csv("https://www.baseball-reference.com/data/war_daily_bat.txt", na = "NULL")
+bwar_pit = readr::read_csv("https://www.baseball-reference.com/data/war_daily_pitch.txt", na = "NULL")
+team_name_mapping <- c(
+  "CHW" = "CHA",
+  "KCR" = "KCA",
+  "NYM" = "NYN",
+  "NYY" = "NYA",
+  "TBD" = "TBA",
+  "WSN" = "WAS",
+  "SFG" = "SFN",
+  "STL" = "SLN",
+  "SDP" = "SDN", 
+  "LAD" = "LAN", 
+  "CHC" = "CHN", 
+  "FLA" = "FLO"   
+)
+
+bwar_bat <- bwar_bat %>%
+  mutate(team_ID = ifelse(team_ID %in% names(team_name_mapping), team_name_mapping[team_ID], team_ID))
+
+bwar_pit <- bwar_pit %>%
+  mutate(team_ID = ifelse(team_ID %in% names(team_name_mapping), team_name_mapping[team_ID], team_ID))
+teams_data_bat <- bwar_bat %>% filter(year_ID >= 1990, !year_ID %in% c(1994, 1995, 2020))
+teams_data_pit <- bwar_pit %>% filter(year_ID >= 1990, !year_ID %in% c(1994, 1995, 2020))
+
+team_defensive_war <- teams_data_bat %>% 
+  group_by(year_ID, team_ID) %>%
+  replace_na(list(WAR_def = 0, runs_br=0)) %>%
+  summarise(dWAR = sum(WAR_def), BRruns = sum(runs_br))
+
+bullpen_war <- teams_data_pit %>%
+  mutate(pWAR = IPouts_relief / IPouts * WAR) %>%
+  replace_na(list(pWAR = 0)) %>%
+  group_by(year_ID, team_ID) %>%
+  summarise(penWAR = sum(pWAR))
+
+teams_data_b <- merge(
+  teams_data, 
+  merge(
+    team_defensive_war, 
+    bullpen_war, 
+    by = c('year_ID', 'team_ID')
+  ), 
+  by = c('year_ID', 'team_ID')
+)
+
+```
+
+
+```{r}
+teams_data_c <- teams_data_b %>%
+  mutate(scaledSO = scale(SO / AB),
+         scaledBA = scale(H / AB),
+         scaledABpHR = scale(AB / HR),
+         scaledpenWAR = scale(penWAR),
+         scaleddWAR = scale(dWAR),
+         scaledBRruns = scale(BRruns))
+head(teams_data_c)
+```
+
+
+```{r}
+teams_data_d <- teams_data_c %>% mutate(lW = log(W/L), lR = log(R/RA))
+k <- lm(lW ~ lR - 1, data = teams_data_d)$coefficients
+teams_data_k <- teams_data_c %>%
+  mutate(Wpct = W/(W+L), Wpytk = R^k/(R^k + RA^k), residuals_pytk = Wpct - Wpytk)
+head(teams_data_k)
+```
+
+  
+```{r}
+royals_2014_2015 <- teams_data_k %>%
+  filter(team_ID == "KCA", year_ID %in% c(2014, 2015))
+royals_2014_2015
+```
+
+
+
+```{r}
+library(dplyr)
+model <- lm(residuals_pytk ~ penWAR, data = teams_data_k)
+above <- predict(model, teams_data_k %>% 
+                       filter(year_ID %in% c(2014, 2015) & team_ID == 'KCA')) * 162
+above
+```
+
+-K Means
+
+```{r}
+library(dplyr)
+set.seed(123)
+clustering_function <- function(k_value) {
+  data_kmeans <- teams_data_k %>%
+    select(scaledSO, scaledBA, scaledABpHR, scaledpenWAR, scaleddWAR, scaledBRruns)
+  kmeans_model <- kmeans(data_kmeans, centers = k_value)
+  teams_data_clustered <- cbind(teams_data_k, cluster = kmeans_model$cluster)
+  index14 <- teams_data_clustered %>% filter(year_ID == 2014 & team_ID == 'KCA') %>% pull(cluster)
+  index15 <- teams_data_clustered %>% filter(year_ID == 2015 & team_ID == 'KCA') %>% pull(cluster)
+  similar_teams <- teams_data_clustered %>%
+    filter(cluster %in% c(index14, index15)) %>%
+    filter(!(year_ID %in% c(2014, 2015) & team_ID == 'KCA'))
+  
+  similar_wins <- mean(similar_teams$residuals_pytk, na.rm = TRUE) * 162
+  royals_wins <- mean(teams_data_clustered %>%
+                        filter(year_ID %in% c(2014, 2015) & team_ID == 'KCA') %>%
+                        pull(residuals_pytk), na.rm = TRUE) * 162
+  
+  return(c(Similar_win = as.numeric(similar_wins), Royals_win = as.numeric(royals_wins)))
+}
+rvs <- lapply(30:50, clustering_function)
+rvs_df <- do.call(rbind, rvs)
+rvs_df <- as.data.frame(rvs_df)
+rvs_df <- mutate_all(rvs_df, as.numeric)
+colMeans(rvs_df)
+
+```
+
+ 
+```{r}
+data <- Teams %>%
+  select(yearID, teamID, franchID, W, L, AB, H, X2B, X3B, HR, BB, HBP, SF,
+                 HA, HRA, BBA, SOA, IPouts, FP, R, RA, G) %>%
+  filter(yearID >= 1990 & !(yearID %in% c(1994, 1995, 2020))) %>%
+    replace_na(list(HBP = 0, SF = 0)) %>%
+  mutate(
+    RD = (R - RA) / (W + L), X1B = H - (X2B + X3B + HR),
+    OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+    SLG = (X1B + 2*X2B + 3*X3B + 4*HR)/AB,
+    OPS = OBP + SLG,
+    WHIP = (BB + HA) / (IPouts / 3), 
+    FIP = 3*(13*HRA + 3*BBA - 2*SOA)/IPouts)
+head(data)
+avg_data <- data %>%
+  group_by(yearID) %>%
+  summarise(AB = sum(AB), R = sum(R), H = sum(H), HBP = sum(HBP), X1B = sum(X1B),
+            X2B = sum(X2B), X3B = sum(X3B), HR = sum(HR), HA = sum(HA),
+            BB = sum(BB), SF = sum(SF), avgFP = mean(FP),
+            OBP = mean(OBP), BBA = sum(BBA),
+            SLG = mean(SLG), OPS = mean(OPS), IPouts = sum(IPouts)) %>%
+  mutate(
+    OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+    SLG = (X1B + 2*X2B + 3*X3B + 4*HR)/AB,
+    avgOPS = OBP + SLG,
+    avgWHIP = 3*(HA + BBA)/IPouts
+  ) %>%
+  ungroup() %>%
+  select(yearID, avgWHIP, avgOPS, avgFP)
+scale_data <- merge(data, avg_data, by = "yearID")
+scale_data <- scale_data %>%
+  mutate(
+    WHIPscale = avgWHIP/WHIP, 
+    OPSscale = OPS/avgOPS,
+    FPscale = avgFP/FP)
+
+colnames(scale_data)[1:2] <- c("year_ID", "team_ID")
+data_b <- merge(teams_data_k, scale_data %>% select(year_ID, team_ID, OPSscale, WHIPscale), 
+                by = c('year_ID', 'team_ID'))
+model_b <- lm(Wpct ~ scaledSO + scaledBA + scaledABpHR + 
+                scaledpenWAR + scaleddWAR + scaledBRruns + 
+                OPSscale + WHIPscale, data = data_b)
+summary(model_b)
+model_b2 <- lm(Wpct ~ scaledpenWAR + scaleddWAR + scaledBRruns + 
+                OPSscale + WHIPscale, data = data_b)
+summary(model_b2)
+predict(model_b2, (data_b %>% filter(year_ID %in% c(2014,2015) & team_ID == 'KCA')))
+(data_b %>% filter(year_ID %in% c(2014,2015) & team_ID == 'KCA'))$Wpct
+
+```
+The model underestimates the success of the 2014-2015 Royals.
+
+  
+```{r}
+teams_data_28 <- Teams %>% filter(yearID >= 1990 & yearID <= 2018) %>%
+  group_by(teamID) %>%
+  summarize(Wpct = sum(W)/(sum(W)+sum(L)),
+         lW = log(sum(W)/sum(L)),
+         lR = log(sum(R)/sum(RA)), R = sum(R), RA = sum(RA))
+model_28 <- lm(lW ~ lR-1, data = teams_data_28)
+k <- model_28$coefficients
+teams_data_28 <- teams_data_28 %>% mutate(Wpct_pytk = R^k / (R^k + RA^k)) %>%
+  mutate(residuals_pytk = Wpct - Wpct_pytk)
+```
+
+  
+```{r}
+library(retrosheet)
+teams_data_28b = getRetrosheet(type = "game", year = 1990) 
+for(i in 1991:2017) {
+  gm = getRetrosheet(type = "game", year = i)
+  teams_data_28b = rbind(teams_data_28b, gm)
+}
+hg <- teams_data_28b %>%
+      mutate(hW = ifelse(HmRuns > VisRuns, 1, 0), hL = ifelse(HmRuns < VisRuns, 1, 0)) %>%
+  group_by(HmMgrNm) %>%
+  summarize(hW = sum(hW), hL = sum(hL), hR = sum(HmRuns), hRA = sum(VisRuns))
+vg <- teams_data_28b %>%
+      mutate(vW = ifelse(HmRuns < VisRuns, 1, 0), vL = ifelse(HmRuns > VisRuns, 1, 0)) %>%
+  group_by(VisMgrNm) %>%
+  summarize(vW = sum(vW), vL = sum(vL), vR = sum(VisRuns), vRA = sum(HmRuns))
+colnames(hg)[1] = "manager"
+colnames(vg)[1] = "manager"
+hv = merge(hg, vg, by = "manager")
+
+top_managers<- hv %>%
+     mutate(W = hW + vW,
+            L = hL + vL,
+            G = W + L,
+            R = hR + vR,
+            RA = hRA + vRA,
+            Wpct = W / (W + L),
+            Wpct_pytk = R^k / (R^k + RA^k),
+            residuals_pytk = Wpct - Wpct_pytk) %>%
+select(manager, W, L, G, R, RA, Wpct, Wpct_pytk, residuals_pytk)
+
+top_managers %>% arrange(desc(residuals_pytk)) %>% head(10)
+top_managers %>% arrange((residuals_pytk)) %>% head(10)
+```
+
+  
+```{r}
+mlb98 <- read.csv('all1998.csv')
+fields <- read.csv('fields.csv')
+names(mlb98) <- fields[, "Header"]
+sosa_ab <- mlb98 %>%
+  filter(BASE1_RUN_ID != "" | BASE2_RUN_ID != "" | BASE3_RUN_ID != "") %>% filter(RESP_BAT_ID == "sosas001") %>% filter(AB_FL == "TRUE")
+sosa_ab <- count(sosa_ab)
+sosa_hr <- mlb98 %>%
+  filter(EVENT_CD == "23") %>% filter(RBI_CT >= 2) %>% filter(RESP_BAT_ID == "sosas001") 
+sosa_hr <- count(sosa_hr)
+mm_ab <- mlb98 %>%
+  filter(BASE1_RUN_ID != "" | BASE2_RUN_ID != "" | BASE3_RUN_ID != "") %>% filter(RESP_BAT_ID == "mcgwm001") %>% filter(AB_FL == "TRUE")
+mm_ab = count(mm_ab)
+mm_hr = mlb98 %>%
+  filter(EVENT_CD == "23") %>% filter(RBI_CT >= 2) %>% filter(RESP_BAT_ID == "mcgwm001")
+mm_hr = count(mm_hr)
+sosa_mm <- data.frame("Opportunities" = c(sosa_ab$n, mm_ab$n), 
+                       "Hit Home Runs" = c(sosa_hr$n, mm_hr$n), 
+                       "Player" = c("Sammy Sosa", "Mark McGwire"))
+sosa_mm
+```
+
+
+
+
+
